@@ -10,10 +10,13 @@
 #include "include/storage/quack_catalog.hpp"
 
 #include <queue>
+
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/database_manager.hpp"
 namespace duckdb {
 
 static unique_ptr<FunctionData> QuackScanBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	// Set logging to be pretty verbose (everything except message payloads)
 	if (input.inputs.empty()) {
 		throw InternalException("No input to quack scan?");
@@ -50,7 +53,9 @@ static unique_ptr<FunctionData> QuackScanBind(ClientContext &context, TableFunct
 	    context, make_uniq<PrepareRequestMessage>(client_connection.ConnectionId(), query));
 
 	return_types = bind_response->Types();
-	names = bind_response->Names();
+	for (const auto &quack_name : bind_response->Names()) {
+		names.emplace_back(quack_name);
+	}
 
 	bind_data->results = std::move(bind_response->MutableResults());
 	bind_data->needs_more_fetch = bind_response->NeedsMoreFetch();
@@ -66,7 +71,7 @@ QuackCatalog &GetQuackCatalog(ClientContext &context, Value &catalog_name) {
 	// look up the database to query
 	auto db_name = catalog_name.GetValue<string>();
 	auto &db_manager = DatabaseManager::Get(context);
-	auto db = db_manager.GetDatabase(context, db_name);
+	auto db = db_manager.GetDatabase(context, Identifier(db_name));
 	if (!db) {
 		throw BinderException("Failed to find attached database \"%s\"", db_name);
 	}
@@ -78,7 +83,7 @@ QuackCatalog &GetQuackCatalog(ClientContext &context, Value &catalog_name) {
 }
 
 static unique_ptr<FunctionData> QuackScanBindCatalogName(ClientContext &context, TableFunctionBindInput &input,
-                                                         vector<LogicalType> &return_types, vector<string> &names) {
+                                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
 	if (input.inputs[0].IsNull() || input.inputs[1].IsNull()) {
 		throw BinderException("catalog_name and query parameters cannot be NULL");
 	}
@@ -96,7 +101,9 @@ static unique_ptr<FunctionData> QuackScanBindCatalogName(ClientContext &context,
 	    context, make_uniq<PrepareRequestMessage>(bind_data->client_connection->ConnectionId(), query));
 
 	return_types = bind_response->Types();
-	names = bind_response->Names();
+	for (const auto &quack_name : bind_response->Names()) {
+		names.emplace_back(quack_name);
+	}
 
 	// new stuff
 	bind_data->results = std::move(bind_response->MutableResults());

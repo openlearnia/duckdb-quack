@@ -1,4 +1,6 @@
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/database_manager.hpp"
 
 #include "quack_startstop.hpp"
 #include "quack_storage.hpp"
@@ -15,7 +17,7 @@ struct QuackStartStopFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> QuackServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names) {
+                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<QuackStartStopFunctionData>();
 	string listen_uri;
 	if (input.inputs.empty()) {
@@ -89,7 +91,7 @@ TableFunctionSet QuackServeFunction::GetFunction() {
 }
 
 static unique_ptr<FunctionData> QuackStopBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<QuackStartStopFunctionData>();
 	auto &uri_value = input.inputs[0];
 	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
@@ -127,7 +129,7 @@ struct QuackServerListFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> QuackServerListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(LogicalType::VARCHAR);

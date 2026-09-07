@@ -2,6 +2,7 @@
 #include "duckdb/planner/operator/logical_create_table.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 
 #include "storage/quack_catalog.hpp"
 #include "quack_message.hpp"
@@ -56,7 +57,7 @@ SinkResultType QuackInsert::Sink(ExecutionContext &context, DataChunk &chunk, Op
 	append_chunk->Initialize(context.client, chunk.GetTypes());
 	append_chunk->Reference(chunk);
 	auto chunk_wrapper = make_uniq<DataChunkWrapper>(*append_chunk);
-	auto append_message = make_uniq<AppendRequestMessage>(quack_catalog.GetConnectionId(), tbl.schema.name, tbl.name,
+	auto append_message = make_uniq<AppendRequestMessage>(quack_catalog.GetConnectionId(), tbl.schema.name.GetIdentifierName(), tbl.name.GetIdentifierName(),
 	                                                      std::move(chunk_wrapper));
 
 	auto client_connection = quack_catalog.GetClientConnection();
@@ -97,7 +98,7 @@ string QuackInsert::GetName() const {
 
 InsertionOrderPreservingMap<string> QuackInsert::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
-	result["Table Name"] = table ? table->name : info->Base().table;
+	result["Table Name"] = table ? table->name.GetIdentifierName() : info->Base().GetQualifiedName().Name().GetIdentifierName();
 	return result;
 }
 

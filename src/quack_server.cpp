@@ -77,7 +77,7 @@ static string GetSettingString(DatabaseInstance &db, const string &setting_name)
 	Value setting_val;
 	auto &config = DBConfig::GetConfig(db);
 
-	auto lookup_result = config.TryGetCurrentSetting(setting_name, setting_val);
+	auto lookup_result = config.TryGetCurrentSetting(Identifier(setting_name), setting_val);
 	D_ASSERT(lookup_result);
 	D_ASSERT(setting_val.type().id() == LogicalTypeId::VARCHAR);
 	auto setting_str = setting_val.GetValue<string>();
@@ -294,7 +294,7 @@ unique_ptr<QuackMessage> QuackServer::HandleMessageInternal(DatabaseInstance &db
 			if (query_result->HasError()) {
 				return make_uniq<ErrorResponse>(query_result->GetErrorObject());
 			}
-			if (query_result->names.empty()) {
+			if (query_result->GetNames().empty()) {
 				return make_uniq<ErrorResponse>("Query did not return any columns");
 			}
 
@@ -310,8 +310,11 @@ unique_ptr<QuackMessage> QuackServer::HandleMessageInternal(DatabaseInstance &db
 		DBConfig::GetConfig(db).TryGetCurrentSetting("quack_fetch_batch_chunks", max_chunks_val);
 		auto max_chunks_per_batch = max_chunks_val.GetValue<uint64_t>();
 
-		auto names = connection.duckdb_query_result->names;
-		auto types = connection.duckdb_query_result->types;
+		auto types = connection.duckdb_query_result->GetTypes();
+		vector<string> names;
+		for (const auto &quack_name : connection.duckdb_query_result->GetNames()) {
+			names.emplace_back(quack_name.GetIdentifierName());
+		}
 
 		auto results = CreateBatch(Allocator::Get(db), connection.duckdb_query_result, max_chunks_per_batch);
 		if (connection.duckdb_query_result && connection.duckdb_query_result->HasError()) {
@@ -375,7 +378,7 @@ unique_ptr<QuackMessage> QuackServer::HandleMessageInternal(DatabaseInstance &db
 
 		std::unique_lock<std::mutex> lock(connection.lock);
 		auto &context = *connection.duckdb_connection->context;
-		auto table_info = context.TableInfo(append_request_message.SchemaName(), append_request_message.TableName());
+		auto table_info = context.TableInfo(Identifier(append_request_message.SchemaName()), Identifier(append_request_message.TableName()));
 		if (!table_info) {
 			return make_uniq<ErrorResponse>("Table %s.%s does not exist",
 			                                SQLIdentifier(append_request_message.SchemaName()),
