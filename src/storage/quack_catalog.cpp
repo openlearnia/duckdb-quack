@@ -21,10 +21,10 @@
 namespace duckdb {
 
 QuackCatalog::QuackCatalog(AttachedDatabase &db_p, const QuackUri &server_uri, ClientContext &context,
-                           const string &token)
+                           const string &token, quack_header_map_t custom_headers)
     : Catalog(db_p) {
 	// connect to the server
-	client_connection = QuackClient::ConnectToServer(context, server_uri, token);
+	client_connection = QuackClient::ConnectToServer(context, server_uri, token, std::move(custom_headers));
 
 	// load the entire catalog up-front
 	auto load_info = LoadCatalog(context);

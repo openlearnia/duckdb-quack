@@ -30,6 +30,10 @@ public:
 	};
 	vector<ServerSnapshot> ListServers();
 
+	//! Return the HTTP headers seen by the server listening on `listen_uri`
+	//! (throws if there is no server on that uri)
+	vector<std::pair<string, string>> GetSeenRequestHeaders(const string &listen_uri);
+
 	static constexpr const char *STORAGE_EXTENSION_KEY = "quack";
 
 private:

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "quack_client.hpp"
 #include "storage/quack_schema.hpp"
 #include "quack_uri.hpp"
 
@@ -21,7 +22,7 @@ class QuackClientConnection;
 class QuackCatalog : public Catalog {
 public:
 	explicit QuackCatalog(AttachedDatabase &db_p, const QuackUri &server_uri_p, ClientContext &context,
-	                      const string &token);
+	                      const string &token, quack_header_map_t custom_headers = {});
 	~QuackCatalog() override;
 
 public:

@@ -35,6 +35,18 @@ QuackServer::QuackServer(ClientContext &context_p, const QuackUri &uri_p, const 
 QuackServer::~QuackServer() {
 }
 
+void QuackServer::RecordRequestHeaders(const case_insensitive_map_t<string> &headers) {
+	std::lock_guard<std::mutex> lock(seen_headers_mutex);
+	for (const auto &header : headers) {
+		seen_headers[header.first] = header.second;
+	}
+}
+
+case_insensitive_map_t<string> QuackServer::SeenRequestHeaders() {
+	std::lock_guard<std::mutex> lock(seen_headers_mutex);
+	return seen_headers;
+}
+
 shared_ptr<QuackConnection> QuackServer::GetConnection(const string &connection_id) {
 	std::lock_guard<std::mutex> lock(active_connections_mutex);
 	auto it = active_connections.find(connection_id);

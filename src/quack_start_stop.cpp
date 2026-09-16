@@ -177,3 +177,47 @@ static void QuackServerList(ClientContext &context, TableFunctionInput &data_p, 
 TableFunction QuackServerListFunction::GetFunction() {
 	return TableFunction("quack_server_list", {}, QuackServerList, QuackServerListBind);
 }
+
+struct QuackSeenRequestHeadersFunctionData : public TableFunctionData {
+	bool finished = false;
+	QuackUri listen_uri;
+};
+
+static unique_ptr<FunctionData> QuackSeenRequestHeadersBind(ClientContext &context, TableFunctionBindInput &input,
+                                                            vector<LogicalType> &return_types,
+                                                            vector<Identifier> &names) {
+	auto bind_data = make_uniq<QuackSeenRequestHeadersFunctionData>();
+	auto &uri_value = input.inputs[0];
+	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
+		throw InvalidInputException("Invalid listen string specified");
+	}
+	bind_data->listen_uri =
+	    QuackUri(uri_value.GetValue<string>(), /* not really, but we don't want to ask the user again */ true);
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("value");
+	return std::move(bind_data);
+}
+
+static void QuackSeenRequestHeaders(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<QuackSeenRequestHeadersFunctionData>();
+	if (bind_data.finished) {
+		return;
+	}
+	auto seen_headers =
+	    QuackStorageExtensionInfo::GetState(*context.db).GetSeenRequestHeaders(bind_data.listen_uri.Uri());
+	idx_t row = 0;
+	for (auto &header : seen_headers) {
+		output.SetValue(0, row, Value(header.first));
+		output.SetValue(1, row, Value(header.second));
+		row++;
+	}
+	output.SetCardinality(row);
+	bind_data.finished = true;
+}
+
+TableFunction QuackSeenRequestHeadersFunction::GetFunction() {
+	return TableFunction("quack_seen_request_headers", {LogicalType::VARCHAR}, QuackSeenRequestHeaders,
+	                     QuackSeenRequestHeadersBind);
+}

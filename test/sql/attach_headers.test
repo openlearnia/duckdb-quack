@@ -1,0 +1,149 @@
+# name: test/sql/attach_headers.test
+# description: test the HEADERS attach option (custom HTTP headers on every RPC)
+# group: [sql]
+
+require quack
+
+require httpfs
+
+statement ok
+SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE';
+
+# --------------------------------------------------------------------
+# Negative: validation of the HEADERS option (no server involved)
+# --------------------------------------------------------------------
+
+# HEADERS must be a MAP
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers 42);
+----
+HEADERS attach option must be a MAP of VARCHAR to VARCHAR
+
+# keys must be VARCHAR
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {42: 'a'});
+----
+HEADERS attach option keys must be VARCHAR, not INTEGER
+
+# NULL values are rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A': NULL::VARCHAR});
+----
+NULL is not supported as a value for header
+
+# non-VARCHAR values are rejected (strict value typing, no scalar coercion)
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A': 42});
+----
+HEADERS attach option values must be VARCHAR, not INTEGER
+
+# nested values are rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A': [1]});
+----
+HEADERS attach option values must be VARCHAR, not INTEGER[]
+
+# transport-controlled headers are rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'Host': 'evil.com'});
+----
+cannot be set via HEADERS (controlled by the HTTP transport)
+
+# duplicate header names (case-insensitive) are rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A': '1', 'x-a': '2'});
+----
+in HEADERS attach option (header names are case-insensitive)
+
+# empty header names are rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'': 'v'});
+----
+HEADERS attach option contains a NULL or empty header name
+
+# CR/LF smuggled into a header name (header injection) is rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A'||chr(13)||chr(10)||'X-Forwarded-For: internal': 'v'});
+----
+Header name "X-A
+
+# CR/LF smuggled into a header value is rejected
+statement error
+attach 'quack:localhost' as rpc_headers_fail (token 'asdf', headers MAP {'X-A': 'v'||chr(10)||'X-Evil: 1'});
+----
+Value of header "X-A
+
+# quack_seen_request_headers on an unknown uri throws
+statement error
+from quack_seen_request_headers('quack:localhost:1');
+----
+No quack server listening on
+
+# --------------------------------------------------------------------
+# Positive: end-to-end, headers must reach the server on every RPC
+# --------------------------------------------------------------------
+
+foreach server 'quack:localhost'
+
+statement ok con1
+call quack_serve({server}, token='asdf');
+
+statement ok con2
+attach {server} as rpc_headers (token 'asdf', headers MAP {'X-Serverless-Authorization': 'Bearer tok', 'X-Quack-Test': 'yes'});
+
+query I con2
+from rpc_headers.query('select 42');
+----
+42
+
+query I con2
+from rpc_headers.query('select 41 + 1');
+----
+42
+
+# the server must have seen the custom headers;
+# auth-type header values are redacted by quack_seen_request_headers
+query II
+from quack_seen_request_headers({server}) where lower(name) = 'x-serverless-authorization'
+----
+X-Serverless-Authorization	<redacted>
+
+query II
+from quack_seen_request_headers({server}) where lower(name) = 'x-quack-test'
+----
+X-Quack-Test	yes
+
+# attaching with an empty MAP succeeds and is a no-op
+statement ok con2
+attach {server} as rpc_headers_empty (token 'asdf', headers MAP {});
+
+statement ok con2
+detach rpc_headers_empty;
+
+statement ok con2
+detach rpc_headers;
+
+# --------------------------------------------------------------------
+# Negative e2e: attaching without HEADERS sends no custom headers
+# --------------------------------------------------------------------
+
+statement ok con1
+call quack_stop({server});
+
+statement ok con1
+call quack_serve({server}, token='asdf');
+
+statement ok con2
+attach {server} as rpc_plain (token 'asdf');
+
+query II
+from quack_seen_request_headers({server}) where lower(name) = 'x-quack-test'
+----
+
+statement ok con2
+detach rpc_plain;
+
+statement ok con1
+call quack_stop({server});
+
+endloop

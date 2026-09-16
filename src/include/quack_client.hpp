@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/http_util.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
@@ -12,9 +13,11 @@ namespace duckdb {
 class QuackClientConnection;
 struct QuackClientWrapper;
 
+using quack_header_map_t = case_insensitive_map_t<string>;
+
 class QuackClient {
 public:
-	explicit QuackClient(DatabaseInstance &db_p, const QuackUri &uri_p);
+	explicit QuackClient(DatabaseInstance &db_p, const QuackUri &uri_p, quack_header_map_t custom_headers_p = {});
 	virtual ~QuackClient();
 
 	template <class TARGET>
@@ -31,16 +34,21 @@ public:
 		return unique_ptr_cast<QuackMessage, TARGET>(std::move(response_message));
 	}
 
-	static unique_ptr<QuackClient> GetClient(DatabaseInstance &db, const QuackUri &uri);
-	static unique_ptr<QuackClient> GetClient(ClientContext &context, const QuackUri &uri);
+	static unique_ptr<QuackClient> GetClient(DatabaseInstance &db, const QuackUri &uri,
+	                                         const quack_header_map_t &custom_headers = {});
+	static unique_ptr<QuackClient> GetClient(ClientContext &context, const QuackUri &uri,
+	                                         const quack_header_map_t &custom_headers = {});
 
-	static shared_ptr<QuackClientConnection> ConnectToServer(ClientContext &context, const QuackUri &uri, string token);
+	static shared_ptr<QuackClientConnection> ConnectToServer(ClientContext &context, const QuackUri &uri, string token,
+	                                                         quack_header_map_t custom_headers = {});
 
 protected:
 	mutex request_mutex;
 	MemoryStream read_stream, write_stream;
 	DatabaseInstance &db;
 	QuackUri uri;
+	//! Custom HTTP headers injected into every outgoing RPC request
+	quack_header_map_t custom_headers;
 
 private:
 	virtual unique_ptr<QuackMessage> RequestInternal(optional_ptr<ClientContext> context,
@@ -50,7 +58,7 @@ private:
 class QuackClientConnection : public enable_shared_from_this<QuackClientConnection> {
 public:
 	explicit QuackClientConnection(unique_ptr<QuackClient> client_p, QuackUri uri_p, string connection_id_p,
-	                               idx_t max_connections_cached = 1);
+	                               quack_header_map_t custom_headers_p = {}, idx_t max_connections_cached = 1);
 	~QuackClientConnection();
 
 	const string &ConnectionId() const {
@@ -71,6 +79,8 @@ private:
 	mutable mutex lock;
 	mutable vector<unique_ptr<QuackClient>> cached_clients;
 	idx_t max_connections_cached;
+	//! Custom HTTP headers used when refilling the client cache
+	const quack_header_map_t custom_headers;
 };
 
 struct QuackClientWrapper {
@@ -86,7 +96,7 @@ private:
 
 class HttpsQuackClient : public QuackClient {
 public:
-	HttpsQuackClient(DatabaseInstance &db, const QuackUri &uri_p);
+	HttpsQuackClient(DatabaseInstance &db, const QuackUri &uri_p, quack_header_map_t custom_headers_p = {});
 	~HttpsQuackClient() override;
 
 private:

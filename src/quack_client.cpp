@@ -14,13 +14,15 @@ string GetUriPart(T ele) {
 	return string(ele.first, ele.afterLast - ele.first);
 }
 
-QuackClient::QuackClient(DatabaseInstance &db_p, const QuackUri &uri_p) : db(db_p), uri(uri_p) {
+QuackClient::QuackClient(DatabaseInstance &db_p, const QuackUri &uri_p, quack_header_map_t custom_headers_p)
+    : db(db_p), uri(uri_p), custom_headers(std::move(custom_headers_p)) {
 }
 
 QuackClient::~QuackClient() {
 }
 
-HttpsQuackClient::HttpsQuackClient(DatabaseInstance &db, const QuackUri &uri_p) : QuackClient(db, uri_p) {};
+HttpsQuackClient::HttpsQuackClient(DatabaseInstance &db, const QuackUri &uri_p, quack_header_map_t custom_headers_p)
+    : QuackClient(db, uri_p, std::move(custom_headers_p)) {};
 
 HttpsQuackClient::~HttpsQuackClient() {
 }
@@ -42,6 +44,11 @@ unique_ptr<QuackMessage> HttpsQuackClient::RequestInternal(optional_ptr<ClientCo
 	}
 
 	HTTPHeaders headers;
+	// inject custom headers first: HTTPHeaders::Insert is first-wins, so these
+	// take precedence over session-level extra headers merged in later
+	for (const auto &header : custom_headers) {
+		headers.Insert(header.first, header.second);
+	}
 
 	request_message->ToMemoryStream(write_stream);
 	PostRequestInfo post_request(request_url, headers, *http_params, write_stream.GetData(),
@@ -123,22 +130,25 @@ unique_ptr<QuackMessage> HttpsQuackClient::RequestInternal(optional_ptr<ClientCo
 	return response_message;
 }
 
-unique_ptr<QuackClient> QuackClient::GetClient(DatabaseInstance &db, const QuackUri &uri) {
+unique_ptr<QuackClient> QuackClient::GetClient(DatabaseInstance &db, const QuackUri &uri,
+                                               const quack_header_map_t &custom_headers) {
 	ExtensionHelper::AutoLoadExtension(db, "httpfs");
 	if (!db.ExtensionIsLoaded("httpfs")) {
 		throw MissingExtensionException("The rpc extension requires the httpfs extension to be loaded!");
 	}
 
-	return make_uniq<HttpsQuackClient>(db, uri);
+	return make_uniq<HttpsQuackClient>(db, uri, custom_headers);
 }
 
-unique_ptr<QuackClient> QuackClient::GetClient(ClientContext &context, const QuackUri &uri) {
-	return GetClient(*context.db, uri);
+unique_ptr<QuackClient> QuackClient::GetClient(ClientContext &context, const QuackUri &uri,
+                                               const quack_header_map_t &custom_headers) {
+	return GetClient(*context.db, uri, custom_headers);
 }
 
 QuackClientConnection::QuackClientConnection(unique_ptr<QuackClient> client_p, QuackUri uri_p, string connection_id_p,
-                                             idx_t max_connections_cached)
-    : uri(std::move(uri_p)), connection_id(std::move(connection_id_p)), max_connections_cached(max_connections_cached) {
+                                             quack_header_map_t custom_headers_p, idx_t max_connections_cached)
+    : uri(std::move(uri_p)), connection_id(std::move(connection_id_p)), max_connections_cached(max_connections_cached),
+      custom_headers(std::move(custom_headers_p)) {
 	if (client_p) {
 		StoreClient(std::move(client_p));
 	}
@@ -154,8 +164,8 @@ QuackClientConnection::~QuackClientConnection() {
 	}
 }
 
-shared_ptr<QuackClientConnection> QuackClient::ConnectToServer(ClientContext &context, const QuackUri &uri,
-                                                               string token) {
+shared_ptr<QuackClientConnection> QuackClient::ConnectToServer(ClientContext &context, const QuackUri &uri, string token,
+                                                               quack_header_map_t custom_headers) {
 	// if no token is provided fetch it from the secret manager
 	if (token.empty()) {
 		auto &secret_manager = SecretManager::Get(context);
@@ -171,7 +181,7 @@ shared_ptr<QuackClientConnection> QuackClient::ConnectToServer(ClientContext &co
 	}
 
 	// open a HTTP client to the server
-	auto client = QuackClient::GetClient(context, uri);
+	auto client = QuackClient::GetClient(context, uri, custom_headers);
 
 	// submit the connection request
 	auto connection_request_response =
@@ -179,7 +189,8 @@ shared_ptr<QuackClientConnection> QuackClient::ConnectToServer(ClientContext &co
 	// success! we got a connection id
 	// construct the client connection and return it
 	auto connection_id = connection_request_response->ConnectionId();
-	return make_shared_ptr<QuackClientConnection>(std::move(client), uri, std::move(connection_id));
+	return make_shared_ptr<QuackClientConnection>(std::move(client), uri, std::move(connection_id),
+	                                              std::move(custom_headers));
 }
 
 unique_ptr<QuackClientWrapper> QuackClientConnection::GetClient(ClientContext &context) const {
@@ -191,7 +202,7 @@ unique_ptr<QuackClientWrapper> QuackClientConnection::GetClient(ClientContext &c
 		cached_clients.pop_back();
 	} else {
 		// instantiate a new client
-		result = QuackClient::GetClient(context, uri);
+		result = QuackClient::GetClient(context, uri, custom_headers);
 	}
 	return make_uniq<QuackClientWrapper>(std::move(result), shared_from_this());
 }

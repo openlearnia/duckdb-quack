@@ -5,6 +5,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 
+#include "quack_client.hpp"
 #include "quack_storage.hpp"
 #include "quack_server.hpp"
 #include "storage/quack_catalog.hpp"
@@ -53,6 +54,31 @@ vector<QuackStorageExtensionInfo::ServerSnapshot> QuackStorageExtensionInfo::Lis
 	return result;
 }
 
+//! Header names whose values must never be surfaced by quack_seen_request_headers.
+static bool IsSensitiveHeaderName(const string &name) {
+	auto lower = StringUtil::Lower(name);
+	return lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" ||
+	       lower == "x-serverless-authorization" || lower == "x-api-key" || lower == "x-goog-iap-id-token";
+}
+
+vector<std::pair<string, string>> QuackStorageExtensionInfo::GetSeenRequestHeaders(const string &listen_uri) {
+	QuackUri uri(listen_uri, /* not really, but we don't want to ask the user again */ true);
+	std::lock_guard<std::mutex> lock(servers_mutex);
+	const auto it = servers.find(uri.CanonicalUri());
+	if (it == servers.end()) {
+		throw InvalidInputException("No quack server listening on %s", listen_uri);
+	}
+	auto seen = it->second->SeenRequestHeaders();
+	vector<std::pair<string, string>> result;
+	result.reserve(seen.size());
+	for (const auto &header : seen) {
+		// Observability seam: never expose credential-bearing values.
+		auto value = IsSensitiveHeaderName(header.first) ? string("<redacted>") : header.second;
+		result.emplace_back(header.first, std::move(value));
+	}
+	return result;
+}
+
 bool QuackStorageExtensionInfo::StopServer(ClientContext &context, const QuackUri &listen_uri) {
 	unique_ptr<QuackServer> to_destroy;
 	{
@@ -71,6 +97,120 @@ bool QuackStorageExtensionInfo::StopServer(ClientContext &context, const QuackUr
 	return true;
 }
 
+static bool IsTransportControlledHeader(const string &name) {
+	auto lower = StringUtil::Lower(name);
+	return lower == "host" || lower == "content-length" || lower == "transfer-encoding" || lower == "connection" ||
+	       lower == "expect";
+}
+
+// RFC 9110 token character: tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+// "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+static bool IsTokenChar(unsigned char c) {
+	if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		return true;
+	}
+	switch (c) {
+	case '!':
+	case '#':
+	case '$':
+	case '%':
+	case '&':
+	case '\'':
+	case '*':
+	case '+':
+	case '-':
+	case '.':
+	case '^':
+	case '_':
+	case '`':
+	case '|':
+	case '~':
+		return true;
+	default:
+		return false;
+	}
+}
+
+//! Rejects anything outside the RFC 9110 token character set, which in
+//! particular rules out CR/LF and other control characters used to smuggle
+//! extra headers ("header injection").
+static bool IsValidHeaderName(const string &name) {
+	for (const auto ch : name) {
+		if (!IsTokenChar(static_cast<unsigned char>(ch))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Field values must not contain control characters: reject every byte < 0x20
+//! except HTAB (0x09), and 0x7F. Bytes >= 0x80 (e.g. UTF-8 or obs-text) are allowed.
+static bool IsValidHeaderValue(const string &value) {
+	for (const auto ch : value) {
+		const auto c = static_cast<unsigned char>(ch);
+		if (c == '\t') {
+			continue;
+		}
+		if (c < 0x20 || c == 0x7F) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static quack_header_map_t ParseAttachHeaders(const Value &headers_value) {
+	if (headers_value.type().id() != LogicalTypeId::MAP) {
+		throw InvalidInputException("HEADERS attach option must be a MAP of VARCHAR to VARCHAR");
+	}
+	const auto &entries = MapValue::GetChildren(headers_value);
+	if (entries.empty()) {
+		// an empty MAP is a no-op (regardless of its declared key/value types)
+		return quack_header_map_t();
+	}
+	const auto &key_type = MapType::KeyType(headers_value.type());
+	if (key_type.id() != LogicalTypeId::VARCHAR) {
+		throw InvalidInputException("HEADERS attach option keys must be VARCHAR, not %s", key_type.ToString());
+	}
+	const auto &value_type = MapType::ValueType(headers_value.type());
+	if (value_type.id() != LogicalTypeId::VARCHAR) {
+		throw InvalidInputException("HEADERS attach option values must be VARCHAR, not %s", value_type.ToString());
+	}
+
+	quack_header_map_t result;
+	for (const auto &entry : entries) {
+		const auto &children = StructValue::GetChildren(entry);
+		if (children.size() != 2) {
+			throw InvalidInputException("HEADERS attach option must be a MAP of VARCHAR to VARCHAR");
+		}
+		const auto &key_value = children[0];
+		const auto &val = children[1];
+		if (key_value.IsNull() || key_value.GetValue<string>().empty()) {
+			throw InvalidInputException("HEADERS attach option contains a NULL or empty header name");
+		}
+		auto name = key_value.GetValue<string>();
+		if (!IsValidHeaderName(name)) {
+			throw InvalidInputException("Header name \"%s\" contains invalid characters", name);
+		}
+		if (IsTransportControlledHeader(name)) {
+			throw InvalidInputException("Header \"%s\" cannot be set via HEADERS (controlled by the HTTP transport)",
+			                            name);
+		}
+		if (val.IsNull()) {
+			throw InvalidInputException("NULL is not supported as a value for header \"%s\"", name);
+		}
+		auto value = val.GetValue<string>();
+		if (!IsValidHeaderValue(value)) {
+			throw InvalidInputException("Value of header \"%s\" contains invalid characters", name);
+		}
+		// case_insensitive_map_t: emplace fails when the name (case-insensitively) already exists
+		if (!result.emplace(name, value).second) {
+			throw InvalidInputException(
+			    "Duplicate header \"%s\" in HEADERS attach option (header names are case-insensitive)", name);
+		}
+	}
+	return result;
+}
+
 static unique_ptr<Catalog> QuackAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
                                        AttachedDatabase &db, const string &name, AttachInfo &info,
                                        AttachOptions &attach_options) {
@@ -87,7 +227,11 @@ static unique_ptr<Catalog> QuackAttach(optional_ptr<StorageExtensionInfo> storag
 	if (attach_options.options.find("token") != attach_options.options.end()) {
 		token = attach_options.options["token"].GetValue<string>();
 	}
-	return make_uniq<QuackCatalog>(db, QuackUri(uri, enable_ssl), context, token);
+	quack_header_map_t custom_headers;
+	if (attach_options.options.find("headers") != attach_options.options.end()) {
+		custom_headers = ParseAttachHeaders(attach_options.options["headers"]);
+	}
+	return make_uniq<QuackCatalog>(db, QuackUri(uri, enable_ssl), context, token, std::move(custom_headers));
 }
 
 static unique_ptr<TransactionManager> QuackCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,

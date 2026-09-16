@@ -153,9 +153,35 @@ SET rpc_default_token = '<token-from-rpc_start>';
 
 ### `ATTACH` options
 
-| Option         | Type    | Default | Description                      |
-|---------------|---------|---------|----------------------------------|
-| `disable_ssl` | BOOLEAN | `false` | Use plain HTTP instead of HTTPS. |
+| Option         | Type                     | Default | Description                      |
+|---------------|--------------------------|---------|----------------------------------|
+| `disable_ssl` | BOOLEAN                  | `false` | Use plain HTTP instead of HTTPS. |
+| `headers`     | `MAP(VARCHAR, VARCHAR)`  | `{}`    | Extra HTTP headers sent on **every** RPC request, useful behind identity-aware or authenticating reverse proxies. |
+
+Example — sending an identity-aware-proxy authorization header:
+
+```sql
+ATTACH 'quack:warehouse.example:443' AS wh (
+    TOKEN '...',
+    HEADERS MAP {
+        'X-Serverless-Authorization': 'Bearer ...'
+    }
+);
+```
+
+Notes:
+
+- `ATTACH ... HEADERS` values take precedence over session-level extra HTTP
+  headers added by the HTTP stack, because they are inserted first into each
+  request.
+- Transport-controlled headers (`Host`, `Content-Length`, `Transfer-Encoding`,
+  `Connection`, `Expect`) are rejected when passed via `HEADERS`.
+- The `quack_seen_request_headers(uri)` observability function redacts the
+  values of auth-type headers (`Authorization`, `Proxy-Authorization`,
+  `Cookie`, `X-Serverless-Authorization`, `X-Api-Key`,
+  `X-Goog-Iap-Id-Token`) as `<redacted>`.
+- Scope: standalone `quack_query(uri, sql)` does not yet accept custom
+  headers — `HEADERS` is ATTACH-only for now.
 
 ---
 
