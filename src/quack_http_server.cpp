@@ -79,9 +79,25 @@ HttpQuackServer::HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p
 		res.status = 204;
 	});
 
-	server->Post("/quack", [&](const duckdb_httplib::Request &, duckdb_httplib::Response &res,
+	server->Post("/quack", [&](const duckdb_httplib::Request &req, duckdb_httplib::Response &res,
 	                           const duckdb_httplib::ContentReader &content_reader) {
+		// After StopAccepting() the listener socket is closed, but clients holding
+		// cached keep-alive connections (e.g. through httpfs' HTTP client
+		// connection cache) can still reach this handler until the server object
+		// is fully destroyed (which happens off-thread). Refuse such requests so
+		// a stopped server never serves new RPCs.
+		if (!is_running) {
+			res.status = 503;
+			return;
+		}
 		res.set_header("Access-Control-Allow-Origin", "*");
+		{
+			case_insensitive_map_t<string> request_headers;
+			for (const auto &header : req.headers) {
+				request_headers[header.first] = header.second;
+			}
+			RecordRequestHeaders(request_headers);
+		}
 		MemoryStream stream;
 		content_reader([&](const char *data, size_t data_length) {
 			stream.WriteData((data_ptr_t)data, data_length);

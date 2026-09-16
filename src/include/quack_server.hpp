@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <thread>
 
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 
@@ -79,6 +81,12 @@ public:
 		return active_connections.size();
 	}
 
+	//! Record the HTTP headers received on an RPC request (accumulates across requests).
+	void RecordRequestHeaders(const case_insensitive_map_t<string> &headers);
+
+	//! Snapshot of all HTTP headers recorded so far.
+	case_insensitive_map_t<string> SeenRequestHeaders();
+
 protected:
 	unique_ptr<QuackMessage> HandleMessage(MemoryStream &read_stream);
 	unique_ptr<QuackMessage> HandleMessageInternal(DatabaseInstance &db, QuackMessage &received_message,
@@ -97,6 +105,9 @@ protected:
 private:
 	QuackUri uri;
 	string token;
+
+	mutex seen_headers_mutex;
+	case_insensitive_map_t<string> seen_headers;
 };
 
 class HttpQuackServer : public QuackServer {
@@ -114,7 +125,9 @@ private:
 	unique_ptr<QuackMessage> ReadMessage(MemoryStream &read_stream);
 
 	unique_ptr<duckdb_httplib::Server> server;
-	bool is_running = false;
+	//! Read cross-thread: the POST /quack handler (a worker thread) checks this
+	//! after StopAccepting() / the listener thread may have written it.
+	std::atomic<bool> is_running = false;
 };
 
 } // namespace duckdb
