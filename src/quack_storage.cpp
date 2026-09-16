@@ -23,7 +23,7 @@ QuackStorageExtensionInfo &QuackStorageExtensionInfo::GetState(const DatabaseIns
 }
 
 QuackServer &QuackStorageExtensionInfo::CreateServer(ClientContext &context, const QuackUri &listen_uri,
-                                                     const string &token) {
+                                                     const string &token, bool record_request_headers) {
 	auto key = listen_uri.CanonicalUri();
 	std::lock_guard<std::mutex> lock(servers_mutex);
 	auto it = servers.find(key);
@@ -31,7 +31,7 @@ QuackServer &QuackStorageExtensionInfo::CreateServer(ClientContext &context, con
 		throw InvalidInputException("Server already exists for %s", key);
 	}
 	unique_ptr<QuackServer> server;
-	server = make_uniq<HttpQuackServer>(context, listen_uri, token);
+	server = make_uniq<HttpQuackServer>(context, listen_uri, token, record_request_headers);
 	servers.emplace(key, std::move(server));
 	return *servers[key];
 }
@@ -54,13 +54,6 @@ vector<QuackStorageExtensionInfo::ServerSnapshot> QuackStorageExtensionInfo::Lis
 	return result;
 }
 
-//! Header names whose values must never be surfaced by quack_seen_request_headers.
-static bool IsSensitiveHeaderName(const string &name) {
-	auto lower = StringUtil::Lower(name);
-	return lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" ||
-	       lower == "x-serverless-authorization" || lower == "x-api-key" || lower == "x-goog-iap-id-token";
-}
-
 vector<std::pair<string, string>> QuackStorageExtensionInfo::GetSeenRequestHeaders(const string &listen_uri) {
 	QuackUri uri(listen_uri, /* not really, but we don't want to ask the user again */ true);
 	std::lock_guard<std::mutex> lock(servers_mutex);
@@ -72,9 +65,7 @@ vector<std::pair<string, string>> QuackStorageExtensionInfo::GetSeenRequestHeade
 	vector<std::pair<string, string>> result;
 	result.reserve(seen.size());
 	for (const auto &header : seen) {
-		// Observability seam: never expose credential-bearing values.
-		auto value = IsSensitiveHeaderName(header.first) ? string("<redacted>") : header.second;
-		result.emplace_back(header.first, std::move(value));
+		result.emplace_back(header.first, header.second);
 	}
 	return result;
 }

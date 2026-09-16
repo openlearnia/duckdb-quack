@@ -132,7 +132,7 @@ SET rpc_default_token = '<token-from-rpc_start>';
 
 | Function                                     | Description                                               |
 |---------------------------------------------|-----------------------------------------------------------|
-| `rpc_start(uri, disable_ssl := false)`      | Start a server on `uri`. Returns listen URI, URL, token.  |
+| `rpc_start(uri, disable_ssl := false, record_request_headers := false)` | Start a server on `uri`. Returns listen URI, URL, token. Passing `record_request_headers := true` records incoming request headers for `rpc_seen_request_headers` (**default off**, test/debug only — see the `HEADERS` notes below). |
 | `rpc_stop(uri)`                             | Stop the server listening on `uri`.                       |
 | `rpc_generate_keys()`                       | Generate self-signed TLS keys in DuckDB's cert directory. |
 
@@ -176,10 +176,15 @@ Notes:
   request.
 - Transport-controlled headers (`Host`, `Content-Length`, `Transfer-Encoding`,
   `Connection`, `Expect`) are rejected when passed via `HEADERS`.
-- The `quack_seen_request_headers(uri)` observability function redacts the
-  values of auth-type headers (`Authorization`, `Proxy-Authorization`,
-  `Cookie`, `X-Serverless-Authorization`, `X-Api-Key`,
-  `X-Goog-Iap-Id-Token`) as `<redacted>`.
+- Recording of incoming request headers is **opt-in**: pass
+  `record_request_headers := true` to `rpc_start` (i.e.
+  `rpc_start(..., record_request_headers := true)`) to enable the
+  `quack_seen_request_headers(uri)` introspection function. It is **default
+  off** and intended for tests/debugging only. While enabled, headers
+  accumulate server-wide for the server's lifetime and are returned raw (no
+  redaction). Because remote clients execute SQL **inside** the serving
+  process, any server-side introspection function is reachable by any tenant
+  that can attach — never enable this in multi-tenant production.
 - Scope: standalone `quack_query(uri, sql)` does not yet accept custom
   headers — `HEADERS` is ATTACH-only for now.
 

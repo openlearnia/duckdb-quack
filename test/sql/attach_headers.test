@@ -79,6 +79,12 @@ from quack_seen_request_headers('quack:localhost:1');
 ----
 No quack server listening on
 
+# record_request_headers must be a BOOLEAN (NULL is rejected, not treated as off)
+statement error
+call quack_serve('quack:localhost', token='asdf', record_request_headers=NULL);
+----
+record_request_headers must be a BOOLEAN
+
 # --------------------------------------------------------------------
 # Positive: end-to-end, headers must reach the server on every RPC
 # --------------------------------------------------------------------
@@ -86,10 +92,23 @@ No quack server listening on
 foreach server 'quack:localhost'
 
 statement ok con1
-call quack_serve({server}, token='asdf');
+call quack_serve({server}, token='asdf', record_request_headers=true);
 
 statement ok con2
 attach {server} as rpc_headers (token 'asdf', headers MAP {'X-Serverless-Authorization': 'Bearer tok', 'X-Quack-Test': 'yes'});
+
+# the server must have seen the custom headers;
+# recording is opt-in (record_request_headers=true above) and
+# quack_seen_request_headers returns raw name/value pairs
+query II
+from quack_seen_request_headers({server}) where lower(name) = 'x-serverless-authorization'
+----
+X-Serverless-Authorization	Bearer tok
+
+query II
+from quack_seen_request_headers({server}) where lower(name) = 'x-quack-test'
+----
+X-Quack-Test	yes
 
 query I con2
 from rpc_headers.query('select 42');
@@ -100,18 +119,6 @@ query I con2
 from rpc_headers.query('select 41 + 1');
 ----
 42
-
-# the server must have seen the custom headers;
-# auth-type header values are redacted by quack_seen_request_headers
-query II
-from quack_seen_request_headers({server}) where lower(name) = 'x-serverless-authorization'
-----
-X-Serverless-Authorization	<redacted>
-
-query II
-from quack_seen_request_headers({server}) where lower(name) = 'x-quack-test'
-----
-X-Quack-Test	yes
 
 # attaching with an empty MAP succeeds and is a no-op
 statement ok con2
@@ -124,7 +131,9 @@ statement ok con2
 detach rpc_headers;
 
 # --------------------------------------------------------------------
-# Negative e2e: attaching without HEADERS sends no custom headers
+# Negative e2e: default-off contract. Serving WITHOUT
+# record_request_headers must record nothing at all — not even the
+# headers explicitly attached via HEADERS.
 # --------------------------------------------------------------------
 
 statement ok con1
@@ -134,10 +143,16 @@ statement ok con1
 call quack_serve({server}, token='asdf');
 
 statement ok con2
-attach {server} as rpc_plain (token 'asdf');
+attach {server} as rpc_plain (token 'asdf', headers MAP {'X-Quack-Test': 'yes'});
 
+query I con2
+from rpc_plain.query('select 42');
+----
+42
+
+# zero rows: no headers were recorded while recording is off
 query II
-from quack_seen_request_headers({server}) where lower(name) = 'x-quack-test'
+from quack_seen_request_headers({server})
 ----
 
 statement ok con2

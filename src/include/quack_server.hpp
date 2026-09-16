@@ -112,7 +112,8 @@ private:
 
 class HttpQuackServer : public QuackServer {
 public:
-	HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p, const string &token_p);
+	HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p, const string &token_p,
+	                bool record_request_headers_p);
 
 	void StopAccepting() override;
 	void Close() override;
@@ -128,6 +129,9 @@ private:
 	//! Read cross-thread: the POST /quack handler (a worker thread) checks this
 	//! after StopAccepting() / the listener thread may have written it.
 	std::atomic<bool> is_running = false;
+	//! Opt-in: when false, HTTP request headers are never recorded
+	//! (quack_seen_request_headers stays empty for this server).
+	bool record_request_headers = false;
 };
 
 } // namespace duckdb

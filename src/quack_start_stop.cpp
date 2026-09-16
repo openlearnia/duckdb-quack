@@ -14,6 +14,7 @@ struct QuackStartStopFunctionData : public TableFunctionData {
 	bool finished = false;
 	QuackUri listen_uri;
 	string token;
+	bool record_request_headers = false;
 };
 
 static unique_ptr<FunctionData> QuackServeBind(ClientContext &context, TableFunctionBindInput &input,
@@ -59,6 +60,19 @@ static unique_ptr<FunctionData> QuackServeBind(ClientContext &context, TableFunc
 	// thread is spawned, instead of leaving a half-built server behind.
 	QuackServer::ValidateToken(bind_data->token);
 
+	// Opt-in: record the HTTP headers of incoming RPC requests so they can be
+	// inspected via quack_seen_request_headers(). Off by default — a remote
+	// client's SQL runs inside the serving process, so anything recorded here
+	// is readable by every tenant that can attach.
+	auto record_request_headers = input.named_parameters.find("record_request_headers");
+	if (record_request_headers != input.named_parameters.end()) {
+		if (record_request_headers->second.IsNull() ||
+		    record_request_headers->second.type().id() != LogicalTypeId::BOOLEAN) {
+			throw InvalidInputException("record_request_headers must be a BOOLEAN");
+		}
+		bind_data->record_request_headers = record_request_headers->second.GetValue<bool>();
+	}
+
 	return std::move(bind_data);
 }
 
@@ -68,7 +82,8 @@ static void QuackServe(ClientContext &context, TableFunctionInput &data_p, DataC
 		return;
 	}
 
-	QuackStorageExtensionInfo::GetState(*context.db).CreateServer(context, bind_data.listen_uri, bind_data.token);
+	QuackStorageExtensionInfo::GetState(*context.db)
+	    .CreateServer(context, bind_data.listen_uri, bind_data.token, bind_data.record_request_headers);
 	output.SetValue(0, 0, bind_data.listen_uri.Uri());
 	output.SetValue(1, 0, bind_data.listen_uri.Http());
 	output.SetValue(2, 0, bind_data.token);
@@ -83,6 +98,7 @@ TableFunctionSet QuackServeFunction::GetFunction() {
 	fun.named_parameters["disable_ssl"] = LogicalType::BOOLEAN;
 	fun.named_parameters["allow_other_hostname"] = LogicalType::BOOLEAN;
 	fun.named_parameters["token"] = LogicalType::VARCHAR;
+	fun.named_parameters["record_request_headers"] = LogicalType::BOOLEAN;
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);

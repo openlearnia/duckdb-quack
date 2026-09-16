@@ -50,8 +50,9 @@ void HttpQuackServer::ListenThread(HttpQuackServer *server, const string &listen
 	}
 }
 
-HttpQuackServer::HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p, const string &token_p)
-    : QuackServer(context_p, uri_p, token_p) {
+HttpQuackServer::HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p, const string &token_p,
+                                 bool record_request_headers_p)
+    : QuackServer(context_p, uri_p, token_p), record_request_headers(record_request_headers_p) {
 	server = make_uniq<duckdb_httplib::Server>();
 
 	// Each keep-alive connection holds a server thread for its lifetime.
@@ -91,7 +92,7 @@ HttpQuackServer::HttpQuackServer(ClientContext &context_p, const QuackUri &uri_p
 			return;
 		}
 		res.set_header("Access-Control-Allow-Origin", "*");
-		{
+		if (record_request_headers) {
 			case_insensitive_map_t<string> request_headers;
 			for (const auto &header : req.headers) {
 				request_headers[header.first] = header.second;
