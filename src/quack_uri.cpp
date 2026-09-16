@@ -76,16 +76,13 @@ static void QuackUriParser(const DataChunk &args, ExpressionState &, Vector &res
 
 // just for testing
 ScalarFunction QuackParseUriFunction::GetFunction() {
-	auto fun = ScalarFunction("quack_uri_parser", {/* uri */ LogicalType::VARCHAR, /* ssl */ LogicalType::BOOLEAN},
-	                          LogicalType::STRUCT({{"host", LogicalType::VARCHAR},
-	                                               {"port", LogicalType::USMALLINT},
-	                                               {"ipv6", LogicalType::BOOLEAN},
-	                                               {"ssl", LogicalType::BOOLEAN},
-	                                               {"url", LogicalType::VARCHAR}}),
-	                          QuackUriParser);
-	// the parser throws for invalid URIs; cyanoptera requires this to be declared
-	fun.SetFallible();
-	return fun;
+	return ScalarFunction("quack_uri_parser", {/* uri */ LogicalType::VARCHAR, /* ssl */ LogicalType::BOOLEAN},
+	                      LogicalType::STRUCT({{"host", LogicalType::VARCHAR},
+	                                           {"port", LogicalType::USMALLINT},
+	                                           {"ipv6", LogicalType::BOOLEAN},
+	                                           {"ssl", LogicalType::BOOLEAN},
+	                                           {"url", LogicalType::VARCHAR}}),
+	                      QuackUriParser);
 }
 
 } // namespace duckdb
