@@ -5,7 +5,7 @@
 
 #include "quack_message.hpp"
 
-#include "quack_server.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
 namespace duckdb {
@@ -42,14 +42,26 @@ MessageType EnumUtil::FromString<MessageType>(const char *value) {
 	if (StringUtil::Equals(value, "FETCH_RESPONSE")) {
 		return MessageType::FETCH_RESPONSE;
 	}
-	if (StringUtil::Equals(value, "APPEND_REQUEST")) {
-		return MessageType::APPEND_REQUEST;
+	if (StringUtil::Equals(value, "SEND_DATA_REQUEST")) {
+		return MessageType::SEND_DATA_REQUEST;
+	}
+	if (StringUtil::Equals(value, "SEND_DATA_RESPONSE")) {
+		return MessageType::SEND_DATA_RESPONSE;
 	}
 	if (StringUtil::Equals(value, "SUCCESS_RESPONSE")) {
 		return MessageType::SUCCESS_RESPONSE;
 	}
 	if (StringUtil::Equals(value, "DISCONNECT_MESSAGE")) {
 		return MessageType::DISCONNECT_MESSAGE;
+	}
+	if (StringUtil::Equals(value, "CANCEL_REQUEST")) {
+		return MessageType::CANCEL_REQUEST;
+	}
+	if (StringUtil::Equals(value, "ACKNOWLEDGEMENT")) {
+		return MessageType::ACKNOWLEDGEMENT;
+	}
+	if (StringUtil::Equals(value, "HEARTBEAT_REQUEST")) {
+		return MessageType::HEARTBEAT_REQUEST;
 	}
 	if (StringUtil::Equals(value, "ERROR_RESPONSE")) {
 		return MessageType::ERROR_RESPONSE;
@@ -73,12 +85,20 @@ const char *EnumUtil::ToChars<MessageType>(MessageType value) {
 		return "FETCH_REQUEST";
 	case MessageType::FETCH_RESPONSE:
 		return "FETCH_RESPONSE";
-	case MessageType::APPEND_REQUEST:
-		return "APPEND_REQUEST";
+	case MessageType::SEND_DATA_REQUEST:
+		return "SEND_DATA_REQUEST";
+	case MessageType::SEND_DATA_RESPONSE:
+		return "SEND_DATA_RESPONSE";
 	case MessageType::SUCCESS_RESPONSE:
 		return "SUCCESS_RESPONSE";
 	case MessageType::DISCONNECT_MESSAGE:
 		return "DISCONNECT_MESSAGE";
+	case MessageType::CANCEL_REQUEST:
+		return "CANCEL_REQUEST";
+	case MessageType::ACKNOWLEDGEMENT:
+		return "ACKNOWLEDGEMENT";
+	case MessageType::HEARTBEAT_REQUEST:
+		return "HEARTBEAT_REQUEST";
 	case MessageType::ERROR_RESPONSE:
 		return "ERROR_RESPONSE";
 
@@ -88,11 +108,16 @@ const char *EnumUtil::ToChars<MessageType>(MessageType value) {
 	}
 }
 
+//! One place for the wire format options, so the messages and the chunk blobs cannot diverge.
+static SerializationOptions QuackWireSerializationOptions() {
+	SerializationOptions options;
+	options.storage_compatibility = StorageCompatibility::FromIndex(StorageVersion::V2_0_0);
+	return options;
+}
+
 void QuackMessage::ToMemoryStream(MemoryStream &write_stream) const {
 	write_stream.Rewind();
-	SerializationOptions options;
-	options.storage_compatibility = StorageCompatibility::FromIndex(StorageVersion::V1_5_0);
-	BinarySerializer serializer(write_stream, options);
+	BinarySerializer serializer(write_stream, QuackWireSerializationOptions());
 
 	// write the header
 	serializer.Begin();
@@ -118,12 +143,20 @@ unique_ptr<QuackMessage> QuackMessage::Deserialize(Deserializer &deserializer, M
 		return FetchRequestMessage::Deserialize(deserializer);
 	case MessageType::FETCH_RESPONSE:
 		return FetchResponseMessage::Deserialize(deserializer);
-	case MessageType::APPEND_REQUEST:
-		return AppendRequestMessage::Deserialize(deserializer);
+	case MessageType::SEND_DATA_REQUEST:
+		return SendDataRequestMessage::Deserialize(deserializer);
+	case MessageType::SEND_DATA_RESPONSE:
+		return SendDataResponseMessage::Deserialize(deserializer);
 	case MessageType::SUCCESS_RESPONSE:
 		return SuccessResponse::Deserialize(deserializer);
 	case MessageType::DISCONNECT_MESSAGE:
 		return DisconnectMessage::Deserialize(deserializer);
+	case MessageType::CANCEL_REQUEST:
+		return CancelRequestMessage::Deserialize(deserializer);
+	case MessageType::ACKNOWLEDGEMENT:
+		return AcknowledgementMessage::Deserialize(deserializer);
+	case MessageType::HEARTBEAT_REQUEST:
+		return HeartbeatRequestMessage::Deserialize(deserializer);
 	case MessageType::ERROR_RESPONSE:
 		return ErrorResponse::Deserialize(deserializer);
 	default:
@@ -144,18 +177,23 @@ unique_ptr<QuackMessage> QuackMessage::DeserializeMessage(BinaryDeserializer &de
 	auto result = Deserialize(deserializer, header.type);
 	result->SetHeader(std::move(header));
 	deserializer.End();
+	// a chunk-carrying message continues with its raw blob, from right after the message
+	result->DecodeBlob(deserializer);
 	return result;
 }
 
-ConnectionRequestMessage::ConnectionRequestMessage(const string &auth_string_p)
-    : QuackMessage(TYPE), auth_string(auth_string_p), client_duckdb_version(DuckDB::LibraryVersion()),
-      client_platform(DuckDB::Platform()), min_supported_quack_version(QuackServer::QUACK_VERSION),
-      max_supported_quack_version(QuackServer::QUACK_VERSION) {
+ConnectionRequestMessage::ConnectionRequestMessage(const string &auth_string_p, string client_id_p,
+                                                   idx_t heartbeat_timeout_seconds_p)
+    : QuackMessage(TYPE), auth_string(auth_string_p), client_id(std::move(client_id_p)),
+      client_duckdb_version(DuckDB::LibraryVersion()), client_platform(DuckDB::Platform()),
+      min_supported_quack_version(QUACK_VERSION), max_supported_quack_version(QUACK_VERSION),
+      heartbeat_timeout_seconds(heartbeat_timeout_seconds_p) {
 }
 
-ConnectionResponseMessage::ConnectionResponseMessage(string connection_id_p)
+ConnectionResponseMessage::ConnectionResponseMessage(string connection_id_p, idx_t heartbeat_timeout_seconds_p)
     : QuackMessage(TYPE, std::move(connection_id_p)), server_duckdb_version(DuckDB::LibraryVersion()),
-      server_platform(DuckDB::Platform()), quack_version(QuackServer::QUACK_VERSION) {
+      server_platform(DuckDB::Platform()), quack_version(QUACK_VERSION),
+      heartbeat_timeout_seconds(heartbeat_timeout_seconds_p) {
 }
 
 unique_ptr<QuackMessage> QuackMessage::FromMemoryStream(MemoryStream &read_stream) {
@@ -166,6 +204,85 @@ unique_ptr<QuackMessage> QuackMessage::FromMemoryStream(MemoryStream &read_strea
 	auto header = DeserializeHeader(deserializer);
 	// read the message
 	return DeserializeMessage(deserializer, std::move(header));
+}
+
+//===--------------------------------------------------------------------===//
+// QuackChunkPayloadWriter
+//===--------------------------------------------------------------------===//
+QuackChunkPayloadWriter::QuackChunkPayloadWriter(idx_t capacity_hint) {
+	auto capacity = NextPowerOfTwo(MaxValue<idx_t>(capacity_hint, 65536));
+	stream = make_uniq<MemoryStream>(Allocator::DefaultAllocator(), capacity);
+	// The blob starts after the header space. The header itself is written at emit time.
+	stream->SetPosition(QUACK_PAYLOAD_HEADER_BYTES);
+	serializer = make_uniq<BinarySerializer>(*stream, QuackWireSerializationOptions());
+}
+
+QuackChunkPayloadWriter::~QuackChunkPayloadWriter() {
+}
+
+void QuackChunkPayloadWriter::AppendChunk(DataChunk &chunk) {
+	D_ASSERT(chunk.size() > 0);
+	serializer->Begin();
+	chunk.Serialize(*serializer);
+	serializer->End();
+	chunk_count++;
+}
+
+idx_t QuackChunkPayloadWriter::SizeBytes() const {
+	// The reserved header space is not payload, so it does not count toward the cut measure.
+	return (stream ? stream->GetPosition() : sealed_size) - QUACK_PAYLOAD_HEADER_BYTES;
+}
+
+idx_t QuackChunkPayloadWriter::AllocatedBytes() const {
+	return stream ? stream->GetCapacity() : sealed_size;
+}
+
+QuackChunkPayloadWriter::SealedPayload QuackChunkPayloadWriter::Seal() {
+	D_ASSERT(stream && chunk_count > 0);
+	SealedPayload result;
+	result.payload_size = stream->GetPosition();
+	result.chunk_count = chunk_count;
+	sealed_size = result.payload_size;
+	result.payload = std::move(stream);
+	return result;
+}
+
+//===--------------------------------------------------------------------===//
+// Chunk blob helpers
+//===--------------------------------------------------------------------===//
+idx_t QuackPrependHeader(MemoryStream &payload, const QuackMessage &header_message) {
+	// Only a buffer that QuackChunkPayloadWriter made has the header space.
+	D_ASSERT(payload.GetPosition() >= QUACK_PAYLOAD_HEADER_BYTES);
+	data_t scratch[QUACK_PAYLOAD_HEADER_BYTES];
+	// The non-owning scratch cannot grow: an oversized header throws instead of corrupting the blob.
+	MemoryStream scratch_stream(scratch, QUACK_PAYLOAD_HEADER_BYTES);
+	header_message.ToMemoryStream(scratch_stream);
+	auto header_size = scratch_stream.GetPosition();
+	auto body_start = QUACK_PAYLOAD_HEADER_BYTES - header_size;
+	memcpy(payload.GetData() + body_start, scratch, header_size);
+	return body_start;
+}
+
+vector<unique_ptr<DataChunk>> DecodeQuackChunkBlob(BinaryDeserializer &deserializer, idx_t chunk_count) {
+	vector<unique_ptr<DataChunk>> chunks;
+	// The count comes from the wire, so cap the reservation. A false count fails on the read.
+	chunks.reserve(MinValue<idx_t>(chunk_count, 1024));
+	for (idx_t i = 0; i < chunk_count; i++) {
+		auto chunk = make_uniq<DataChunk>();
+		deserializer.Begin();
+		chunk->Deserialize(deserializer);
+		deserializer.End();
+		chunks.push_back(std::move(chunk));
+	}
+	return chunks;
+}
+
+void SendDataRequestMessage::DecodeBlob(BinaryDeserializer &deserializer) {
+	chunks = DecodeQuackChunkBlob(deserializer, chunk_count);
+}
+
+void FetchResponseMessage::DecodeBlob(BinaryDeserializer &deserializer) {
+	results = DecodeQuackChunkBlob(deserializer, chunk_count);
 }
 
 void DataChunkWrapper::Serialize(Serializer &serializer) const {

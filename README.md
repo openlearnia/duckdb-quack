@@ -9,16 +9,17 @@ and the [documentation](https://duckdb.org/docs/current/quack/overview).
 
 ## Usage Example
 
-We have to install the extension in all involved DuckDB instances:
+The Quack extensions autoinstalls and [autoloads](https://duckdb.org/docs/current/extensions/overview#autoloading-extensions) on first use.
+You can also install and load it manually using:
 
 ```sql
-INSTALL quack FROM core_nightly;
+INSTALL quack;
+LOAD quack;
 ```
 
-Then, we can use one DuckDB instance as a server like so:
+Start Quack on one DuckDB instance, the server, using:
 
 ```sql
-LOAD quack;
 CALL quack_serve('quack:localhost', token = 'super_secret');
 CREATE TABLE hello AS FROM VALUES ('world') v(s);
 ```
@@ -26,7 +27,6 @@ CREATE TABLE hello AS FROM VALUES ('world') v(s);
 And talk to this server from another instance:
 
 ```sql
-LOAD quack;
 CREATE SECRET (TYPE quack, TOKEN 'super_secret');
 ATTACH 'quack:localhost' AS remote;
 FROM remote.hello;
@@ -34,11 +34,56 @@ FROM remote.hello;
 
 This should show the content of the remote table `hello` on the client side.
 
+### Starting the server from a secret
+
+The server can take its token from a `quack` secret instead of the `token` parameter.
+Without arguments, `quack_serve` uses the default secret; `secret = 'name'` picks a specific
+one. When the chosen secret is scoped to a concrete endpoint, that endpoint is what the server
+listens on:
+
+```sql
+CREATE SECRET s1 (TYPE quack, TOKEN 'super_secret', SCOPE 'quack:localhost:9494');
+CALL quack_serve(secret = 's1');   -- listens on quack:localhost:9494 with token 'super_secret'
+```
+
+```sql
+CREATE SECRET (TYPE quack, TOKEN 'super_secret');
+CALL quack_serve();                -- default secret, listens on quack:localhost
+```
+
+If no secret matches and no `token` is given, `quack_serve` generates a random token and
+returns it in the `auth_token` column. To keep that token across restarts, ask for it to be
+persisted:
+
+```sql
+CALL quack_serve(create_secret_if_not_exists = true);
+```
+
+This writes the token to a persistent default secret (`__default_quack`, scoped to `quack:`), so
+the next `quack_serve` - and any client on the machine - reuses the same token. It only does so
+when there is nothing to reuse yet: if a secret was named with `secret =`, or a default secret
+already matches, nothing is written.
+
+### Connecting through a secret
+
+The client side mirrors this. `ATTACH` takes a `SECRET` name, and a bare `quack:` path takes its
+endpoint from that secret, so both ends of the connection can be described by the same secret:
+
+```sql
+CREATE SECRET s1 (TYPE quack, TOKEN 'super_secret', SCOPE 'quack:localhost:9494');
+ATTACH 'quack:' AS remote (TYPE quack, SECRET s1);   -- connects to quack:localhost:9494
+```
+
+Without a `SECRET` name the default secret is used: the one whose scope matches the path, or - when
+the path names no host - the only `quack` secret there is. A path given explicitly always wins over
+the scope of the secret, and a secret scoped to nothing more specific than `quack:` leaves the
+default host in place.
+
 We can also copy data from client to server:
 
 ```sql
 -- on client
-CREATE TABLE remote.hello2 AS FROM VALUES ('world2')v(s);
+CREATE TABLE remote.hello2 AS FROM VALUES ('world2') v(s);
 ```
 
 ```sql

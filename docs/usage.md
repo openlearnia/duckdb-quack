@@ -31,13 +31,13 @@ need to connect. This token can also be [set](#authentication--authorization).
 
 RPC endpoints use the `quack:` scheme, some examples:
 
-| URI                       | Host        | Port (default 1294) |
+| URI                       | Host        | Port (default 9494) |
 |---------------------------|-------------|---------------------|
-| `quack:localhost`         | `localhost` | `1294`              |
+| `quack:localhost`         | `localhost` | `9494`              |
 | `quack:myhost:9000`       | `myhost`    | `9000`              |
-| `quack:127.0.0.1`         | `127.0.0.1` | `1294`              |
+| `quack:127.0.0.1`         | `127.0.0.1` | `9494`              |
 | `quack:[::1]:1234`        | `::1`       | `1234` (IPv6)       |
-| `quack://localhost`       | `localhost` | `1294`              |
+| `quack://localhost`       | `localhost` | `9494`              |
 
 You can parse and validate a URI with the `rpc_uri_parser(uri, ssl)`
 scalar function.
@@ -83,6 +83,10 @@ the client.
 ATTACH 'quack:localhost' AS rpc;
 -- or without TLS:
 ATTACH 'quack:localhost' AS rpc (disable_ssl true);
+-- with an explicit token, client id, and requested heartbeat lease:
+ATTACH 'quack:localhost' AS rpc (
+    token 'super_secret', client_id 'my_client', heartbeat_timeout 30
+);
 ```
 
 Once attached, remote tables look local:
@@ -153,10 +157,20 @@ SET rpc_default_token = '<token-from-rpc_start>';
 
 ### `ATTACH` options
 
-| Option         | Type                     | Default | Description                      |
-|---------------|--------------------------|---------|----------------------------------|
-| `disable_ssl` | BOOLEAN                  | `false` | Use plain HTTP instead of HTTPS. |
-| `headers`     | `MAP(VARCHAR, VARCHAR)`  | `{}`    | Extra HTTP headers sent on **every** RPC request, useful behind identity-aware or authenticating reverse proxies. |
+| Option              | Type    | Default                               | Description                                                                                                                                                                                                                                                                                                                                                                                                  |
+|---------------------|---------|---------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `disable_ssl`       | BOOLEAN | `false`                               | Use plain HTTP instead of HTTPS.                                                                                                                                                                                                                                                                                                                                                                             |
+| `secret`            | VARCHAR | *(the default quack secret)*          | Name of the `quack` secret to use. Its token authenticates the connection, and its scope supplies the endpoint when the attached path is a bare `quack:`. Cannot be combined with `token`.                                                                                                                                                                                                                     |
+| `token`             | VARCHAR | quack secret / `rpc_default_token`    | Auth token sent to the server; overrides any matching quack secret.                                                                                                                                                                                                                                                                                                                                          |
+| `client_id`         | VARCHAR | `quack_default_client_id`             | Opaque client identifier; must be empty or at least 4 characters. Defaults to the `quack_default_client_id` setting when omitted — pass `''` to opt a single connection out. The server derives a stable per-client hash `HMAC-SHA256(server_hmac_key, client_id)` (keyed with a private per-server key, so it is not reproducible by clients), exposed as `client_id_hash` in `quack_active_connections()`. |
+| `heartbeat_timeout` | UBIGINT | `quack_default_heartbeat_timeout`     | Logical-client lease timeout in seconds.                                                                                                                                                                                                                                                                                                                                                                     |
+| `headers`           | `MAP(VARCHAR, VARCHAR)`  | `{}`    | Extra HTTP headers sent on **every** RPC request, useful behind identity-aware or authenticating reverse proxies. |
+
+The heartbeat works as follows: A `heartbeat_timeout` is set per logical connection. Any valid RPC renews the lease. 
+An otherwise-idle client sends a heartbeat after approximately one third of the accepted timeout,
+with jitter to avoid synchronized traffic.
+Transient heartbeat failures do not immediately invalidate a connection, the server expires it only after the accepted 
+timeout has elapsed without valid traffic.
 
 Example — sending an identity-aware-proxy authorization header:
 
@@ -213,6 +227,7 @@ Fields on each entry:
 |--------------------|--------------------------------------------------------------------|
 | `message_type`      | Request type: `PREPARE_REQUEST`, `FETCH_REQUEST`, etc.             |
 | `rpc_connection_id` | Server-issued connection id (stable across requests in one ATTACH).|
+| `client_id_hash`    | Per-client reconnect hash `HMAC-SHA256(server_hmac_key, client_id)`; NULL if no `client_id`.|
 | `client_query_id`   | Monotonic id assigned by the client; correlates client/server logs.|
 | `query`             | SQL payload for `PREPARE_REQUEST`s.                                |
 | `server`            | HTTP(S) URL on client-side logs; NULL on server-side logs.         |

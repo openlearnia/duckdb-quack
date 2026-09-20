@@ -29,6 +29,8 @@ public:
 		idx_t active_connections;
 		vector<std::pair<string, string>> info;
 	};
+
+	vector<QuackConnectionSnapshot> GetActiveConnectionSnaps();
 	vector<ServerSnapshot> ListServers();
 
 	//! Return the HTTP headers seen by the server listening on `listen_uri`

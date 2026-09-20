@@ -2,21 +2,28 @@
 
 namespace duckdb {
 
-QuackUri::QuackUri(string uri_p, bool ssl_p) : ssl(ssl_p), uri(uri_p) {
+QuackUri::QuackUri(const QuackUri &input_p, uint16_t new_port)
+    : ssl(input_p.Ssl()), ipv6(input_p.IPv6()), host(input_p.Host()), port(new_port) {
+	uri = CanonicalUri();
+}
+
+QuackUri::QuackUri(string uri_p, bool ssl_p) : ssl(ssl_p), uri(std::move(uri_p)) {
 	// we should really instantiate a parser here instead, but alas
 	// whitespace be gone
 	ipv6 = false;
 	port = 9494;
 	StringUtil::Trim(uri);
-	// first off, lets be tolerant and accept this variant, too
+	// strip the scheme as a prefix only — must not use StringUtil::Replace here,
+	// which replaces every occurrence and would mangle hostnames containing "quack:"
+	// (e.g. quack://ilum-quack:9494)
+	string remainder;
 	if (StringUtil::StartsWith(uri, "quack://")) {
-		uri = StringUtil::Replace(uri, "quack://", "quack:");
-	}
-	if (!StringUtil::StartsWith(uri, "quack:")) {
+		remainder = uri.substr(strlen("quack://"));
+	} else if (StringUtil::StartsWith(uri, "quack:")) {
+		remainder = uri.substr(strlen("quack:"));
+	} else {
 		throw InvalidInputException("Invalid DuckDB Quack RPC URI, needs to start with 'quack:'");
 	}
-
-	auto remainder = StringUtil::Replace(uri, "quack:", "");
 	if (remainder.empty()) {
 		throw InvalidInputException("Missing hostname");
 	}
@@ -39,16 +46,16 @@ QuackUri::QuackUri(string uri_p, bool ssl_p) : ssl(ssl_p), uri(uri_p) {
 		auto pos = remainder.find(':');
 		auto port_str = remainder.substr(pos + 1);
 		if (port_str.empty()) {
-			throw InvalidInputException("Invalid Port");
+			throw InvalidInputException("Invalid Port \"\"");
 		}
 		int raw_port;
 		try {
 			raw_port = stoi(port_str);
+			if (raw_port < 0 || raw_port > 65535) {
+				throw InvalidInputException("Invalid Port");
+			}
 		} catch (std::exception &) {
-			throw InvalidInputException("Invalid Port");
-		}
-		if (raw_port < 1 || raw_port > 65535) {
-			throw InvalidInputException("Invalid Port");
+			throw InvalidInputException("Invalid Port \"%s\" - must be between 0 and 65535", port_str);
 		}
 		port = raw_port;
 		remainder = remainder.substr(0, pos);
@@ -57,7 +64,10 @@ QuackUri::QuackUri(string uri_p, bool ssl_p) : ssl(ssl_p), uri(uri_p) {
 	if (!ipv6) {
 		host = remainder;
 	}
-	http = StringUtil::Format("http%s://%s:%d", ssl ? "s" : "", ipv6 ? "[" + host + "]" : host, port);
+}
+
+string QuackUri::Http() const {
+	return StringUtil::Format("http%s://%s:%d", ssl ? "s" : "", ipv6 ? "[" + host + "]" : host, port);
 }
 
 static void QuackUriParser(const DataChunk &args, ExpressionState &, Vector &result) {
@@ -76,16 +86,16 @@ static void QuackUriParser(const DataChunk &args, ExpressionState &, Vector &res
 
 // just for testing
 ScalarFunction QuackParseUriFunction::GetFunction() {
-	auto fun = ScalarFunction("quack_uri_parser", {/* uri */ LogicalType::VARCHAR, /* ssl */ LogicalType::BOOLEAN},
-	                          LogicalType::STRUCT({{"host", LogicalType::VARCHAR},
-	                                               {"port", LogicalType::USMALLINT},
-	                                               {"ipv6", LogicalType::BOOLEAN},
-	                                               {"ssl", LogicalType::BOOLEAN},
-	                                               {"url", LogicalType::VARCHAR}}),
-	                          QuackUriParser);
-	// the parser throws for invalid URIs; cyanoptera requires this to be declared
-	fun.SetFallible();
-	return fun;
+	ScalarFunction function("quack_uri_parser", {/* uri */ LogicalType::VARCHAR, /* ssl */ LogicalType::BOOLEAN},
+	                        LogicalType::STRUCT({{"host", LogicalType::VARCHAR},
+	                                             {"port", LogicalType::USMALLINT},
+	                                             {"ipv6", LogicalType::BOOLEAN},
+	                                             {"ssl", LogicalType::BOOLEAN},
+	                                             {"url", LogicalType::VARCHAR}}),
+	                        QuackUriParser);
+	// parsing rejects malformed URIs at runtime, so constant folding must not treat a throw as internal
+	function.SetFallible();
+	return function;
 }
 
 } // namespace duckdb
