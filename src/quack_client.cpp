@@ -99,7 +99,6 @@ string HttpsQuackClient::PostRawLocked(const_data_ptr_t data, idx_t size) {
 	auto &http_util = HTTPUtil::Get(db);
 	auto request_url = uri.Http() + "/quack";
 	HTTPHeaders headers;
-	HTTPHeaders headers;
 	// inject custom headers first: HTTPHeaders::Insert is first-wins, so these
 	// take precedence over session-level extra headers merged in later
 	for (const auto &header : custom_headers) {

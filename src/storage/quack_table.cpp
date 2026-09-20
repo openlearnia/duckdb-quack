@@ -8,6 +8,7 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "storage/quack_view.hpp"
+#include "duckdb/planner/binder.hpp"
 
 namespace duckdb {
 
